@@ -11,9 +11,9 @@
 #
 #  If you're using my code you're welcome to connect with me on LinkedIn
 #  and optionally send me feedback to help steer this or other code I publish
-#
 #  https://www.linkedin.com/in/harisekhon
 #
+#  SSL and python3 @dwinter
 
 """
 
@@ -36,34 +36,41 @@ ISRs and Leader info per partition as the Perl API exposes this additional infor
 Tested on Kafka 0.8.1, 0.8.2.2, 0.9.0.1
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+
+
+
 #from __future__ import unicode_literals
 
 import os
+
+
 import random
 import sys
+sys.path.append("/Users/dwinter/git/pylib/harisekhon/nagiosplugin")
+sys.path.append("/Users/dwinter/git/pylib/harisekhon/")
+
 import traceback
+from configparser import ConfigParser
+from logging import getLogger
+logger = getLogger()
+
 try:
     from kafka import KafkaConsumer, KafkaProducer
     from kafka.common import KafkaError, TopicPartition
 except ImportError:
-    print(traceback.format_exc(), end='')
-    sys.exit(4)
-libdir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'pylib'))
-sys.path.append(libdir)
-try:
-    # pylint: disable=wrong-import-position
-    from harisekhon.utils import log, log_option, ERRORS, CriticalError, UnknownError
-    from harisekhon.utils import validate_hostport, validate_int, get_topfile, random_alnum, validate_chars, isSet
-    from harisekhon import PubSubNagiosPlugin
-except ImportError as _:
-    print(traceback.format_exc(), end='')
+    print traceback.format_exc()
     sys.exit(4)
 
-__author__ = 'Hari Sekhon'
-__version__ = '0.5.2'
+
+from pubsub_nagiosplugin import *
+from utils import *
+
+libdir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'pylib'))
+sys.path.append(libdir)
+
+
+__author__ = 'Hari Sekhon,Dirk Wintergruen'
+__version__ = '0.5.2-DW'
 
 
 class CheckKafka(PubSubNagiosPlugin):
@@ -72,7 +79,7 @@ class CheckKafka(PubSubNagiosPlugin):
         # Python 2.x
         super(CheckKafka, self).__init__()
         # Python 3.x
-        # super().__init__()
+        #super().__init__()
         self.name = 'Kafka'
         self.default_host = 'localhost'
         self.default_port = '9092'
@@ -93,8 +100,34 @@ class CheckKafka(PubSubNagiosPlugin):
         self.start_offset = None
         self.sleep_secs = 0
 
+    def read_config(self,identifier="default"):
+            required_fields = "ssl_password,ssl_cafile,ssl_certfile,ssl_keyfile,security_protocol"
+            config = ConfigParser()
+
+            config.read("/etc/nagios-kafka-plugin")
+
+            if config == []:
+                return None
+
+            else:
+                if identifier.lower() in config.sections():
+                    identifier = identifier.lower()
+                elif identifier.upper() in config.sections():
+                    identifier = identifier.upper()
+                else:
+                    raise ValueError("%s not in config (/etc/nagios-kafka-plugin)"%identifier)
+
+                conf = config[identifier]
+                if not isinstance(required_fields,list):
+                    required_fields = required_fields.split(",")
+
+                for r in required_fields:
+                    if not r in conf:
+                        raise ValueError("%s not in config (%s)"%(r,identifier))
+                return conf
+
     def add_options(self):
-        # super(CheckKafka, self).add_options()
+        #super(CheckKafka, self).add_options()
         self.add_opt('-B', '--brokers',
                      dest='brokers', metavar='broker_list',
                      help='Kafka Broker seed list in form host[:port],host2[:port2]... ' + \
@@ -117,6 +150,7 @@ class CheckKafka(PubSubNagiosPlugin):
         self.add_opt('--list-partitions', action='store_true',
                      help='List Kafka topic paritions from broker(s) and exit')
         self.add_thresholds(default_warning=1, default_critical=2)
+        self.add_opt("--config",help="name of config in /etc/nagios-kafka-plugin, defaults to default")
 
     def process_broker_args(self):
         self.brokers = self.get_opt('brokers')
@@ -124,6 +158,9 @@ class CheckKafka(PubSubNagiosPlugin):
         port = self.get_opt('port')
         host_env = os.getenv('KAFKA_HOST')
         port_env = os.getenv('KAFKA_PORT')
+
+
+
         if not host:
             # protect against blank strings in env vars
             if host_env:
@@ -151,6 +188,14 @@ class CheckKafka(PubSubNagiosPlugin):
         brokers = brokers.rstrip(', ')
         self.brokers = brokers
         log_option('brokers', self.brokers)
+
+        self.config = self.get_opt("config")
+
+        if self.config is None:
+            self.config = "default"
+
+        self.ssl_config = self.read_config(self.config)
+
 
     def process_args(self):
         self.process_broker_args()
@@ -228,6 +273,7 @@ class CheckKafka(PubSubNagiosPlugin):
         self.consumer = KafkaConsumer(
             bootstrap_servers=self.brokers,
             client_id=self.client_id,
+            **self.ssl_config
             #request_timeout_ms=self.timeout_ms + 1, # must be larger than session timeout
             #session_timeout_ms=self.timeout_ms,
             )
@@ -239,10 +285,12 @@ class CheckKafka(PubSubNagiosPlugin):
             print(topic)
 
     def get_topic_partitions(self, topic):
+
         self.consumer = KafkaConsumer(
             topic,
             bootstrap_servers=self.brokers,
             client_id=self.client_id,
+            **self.ssl_config
             #request_timeout_ms=self.timeout_ms
             )
         if topic not in self.get_topics():
@@ -262,6 +310,7 @@ class CheckKafka(PubSubNagiosPlugin):
         self.consumer = KafkaConsumer(
             #self.topic,
             bootstrap_servers=self.brokers,
+            **self.ssl_config
             # client_id=self.client_id,
             # group_id=self.group_id,
             #request_timeout_ms=self.timeout_ms
@@ -300,6 +349,7 @@ class CheckKafka(PubSubNagiosPlugin):
             acks=self.acks,
             batch_size=0,
             max_block_ms=self.timeout_ms,
+            **self.ssl_config
             #request_timeout_ms=self.timeout_ms + 1, # must be larger than session timeout
             #session_timeout_ms=self.timeout_ms,
             )
